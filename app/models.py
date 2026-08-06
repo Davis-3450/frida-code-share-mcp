@@ -38,6 +38,38 @@ class UserProfile:
 
 
 @dataclass
+class BrowseResult:
+    """One page of https://codeshare.frida.re/browse/.
+
+    `page` is the page the site actually served: it clamps out-of-range numbers
+    to the last page instead of returning 404, so `page` may differ from what
+    was requested. `total_pages` comes from the pagination widget.
+    """
+
+    page: int
+    total_pages: int
+    total: int
+    offset: int
+    returned: int
+    truncated: bool
+    projects: list[ProjectSummary] = field(default_factory=list)
+
+
+@dataclass
+class IndexStatus:
+    """State of the local offline index of every browse page."""
+
+    exists: bool
+    projects: int
+    pages: int
+    built_at: str | None = None
+    age_seconds: int | None = None
+    path: str | None = None
+    # Pages the site answered 500 for; their projects are missing from the index.
+    failed_pages: list[int] = field(default_factory=list)
+
+
+@dataclass
 class Project:
     id: str
     name: str
