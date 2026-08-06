@@ -61,7 +61,9 @@ def _parse_article(article, default_creator: str | None = None) -> Project:
         creator = default_creator
 
     stats = article.select_one("h3")
-    likes, views = _parse_stats(stats.get_text(" ", strip=True)) if stats else (None, None)
+    likes, views = (
+        _parse_stats(stats.get_text(" ", strip=True)) if stats else (None, None)
+    )
 
     desc = article.select_one("p")
 
@@ -84,7 +86,11 @@ def parse_articles(html: str, default_creator: str | None = None) -> list[Projec
     posts = soup.select_one("div.posts")
     if posts is None:
         raise ValueError("no 'div.posts' block found: not a project listing page")
-    return [_parse_article(a, default_creator) for a in posts.select("article")]
+    return [
+        _parse_article(a, default_creator)
+        for a in posts.select("article")
+        if a.select_one("h2 a") is not None
+    ]
 
 
 def parse_search(html: str) -> SearchResult:
@@ -106,7 +112,9 @@ def parse_user(html: str) -> UserProfile:
         match = _USERNAME_RE.search(heading.get_text(strip=True))
         if match:
             username = match.group(1)
-    return UserProfile(username=username, projects=parse_articles(html, default_creator=username))
+    return UserProfile(
+        username=username, projects=parse_articles(html, default_creator=username)
+    )
 
 
 def parse_project(html: str) -> Project:
@@ -154,7 +162,9 @@ def parse_project(html: str) -> Project:
     return Project(
         name=name or slug or "",
         description=description or "",
-        url=f"https://codeshare.frida.re/@{creator}/{slug}/" if creator and slug else None,
+        url=f"https://codeshare.frida.re/@{creator}/{slug}/"
+        if creator and slug
+        else None,
         slug=slug,
         creator=creator,
         command=command,
