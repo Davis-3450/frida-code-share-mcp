@@ -10,6 +10,7 @@ _STATS_RE = re.compile(r"([\d.,]+[KMkm]?)")
 _FINGERPRINT_RE = re.compile(r"Fingerprint:\s*([0-9a-fA-F]{64})")
 _QUERY_RE = re.compile(r'Search Results for\s*"(.*)"\s*$', re.DOTALL)
 _USERNAME_RE = re.compile(r"@(.+?)'s Projects")
+_PAGE_RE = re.compile(r"[?&]page=(\d+)")
 
 _SUFFIXES = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 
@@ -130,6 +131,39 @@ def parse_user(html: str) -> tuple[str, list[ProjectSummary]]:
         if match:
             username = match.group(1)
     return username, parse_articles(html, default_creator=username)
+
+
+def parse_pagination(html: str) -> tuple[int, int]:
+    """-> (current page, total pages); (1, 1) when there is no pagination widget.
+
+    The widget lists every page, so the highest number in it is the last page.
+    """
+    soup = _soup(html)
+    block = soup.select_one("ul.pagination")
+    if block is None:
+        return 1, 1
+
+    current = 1
+    active = block.select_one("li.active")
+    if active:
+        match = re.search(r"\d+", active.get_text(" ", strip=True))
+        if match:
+            current = int(match.group())
+
+    pages = {current}
+    for link in block.select("li a[href]"):
+        href = link.get("href")
+        if isinstance(href, str):
+            match = _PAGE_RE.search(href)
+            if match:
+                pages.add(int(match.group(1)))
+    return current, max(pages)
+
+
+def parse_browse(html: str) -> tuple[int, int, list[ProjectSummary]]:
+    """-> (current page, total pages, summaries)"""
+    current, total_pages = parse_pagination(html)
+    return current, total_pages, parse_articles(html)
 
 
 def parse_project(html: str) -> Project:
