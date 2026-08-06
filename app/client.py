@@ -20,3 +20,6 @@ class CodeShareClient:
             endpoint += f"{project_name}/"
         response = self.client.get(endpoint)
         return response
+
+
+_client_ = CodeShareClient()
