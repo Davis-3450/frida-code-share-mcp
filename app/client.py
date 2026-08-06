@@ -1,4 +1,8 @@
-from httpx import Client
+DEFAULT_TTL = 3600
+DEFAULT_CACHE_DIR = Path(tempfile.gettempdir()) / "frida-codeshare-mcp"
+MAX_MEMORY_ENTRIES = 64  # pages are up to ~100KB each; keep the cache bounded
+PRUNE_INTERVAL = 300  # seconds between disk-cache sweeps
+
 
 
 class CodeShareClient:
