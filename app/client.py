@@ -8,8 +8,8 @@ class CodeShareClient:
         self.client = Client(base_url=self.BASE_URL, timeout=10.0)
 
     # https://codeshare.frida.re/search/?query=root
-    def query(self, endpoint: str):
-        response = self.client.get(endpoint)
+    def query(self, endpoint: str, params: dict[str, str] | None = None):
+        response = self.client.get(endpoint, params=params)
         return response
 
     # https://codeshare.frida.re/@dzonerzy/fridantiroot/
