@@ -10,6 +10,7 @@ class project:
     likes: int
     views: int
     creator: str
+    snippet: str
 
 
 @dataclass
@@ -21,3 +22,9 @@ class ProjectList:
 class SearchResult:
     query: str
     results: list[project]
+
+
+@dataclass
+class UserProfile:
+    username: str
+    projects: list[project]
