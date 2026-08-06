@@ -34,7 +34,28 @@ def project_html() -> str:
 
 
 @pytest.fixture
-def offline(monkeypatch, search_html, user_html, project_html):
+def browse_html() -> str:
+    """browse/?page=1 — 45 pages of catalogue."""
+    return _read("browse.html")
+
+
+@pytest.fixture
+def browse_last_html() -> str:
+    """browse/?page=45 — the last page; the site clamps anything past it here."""
+    return _read("browse_last.html")
+
+
+@pytest.fixture
+def index_dir(monkeypatch, tmp_path) -> Path:
+    """Keep the offline index out of the developer's temp dir."""
+    monkeypatch.setenv("FRIDA_CS_INDEX_PATH", str(tmp_path / "browse-index.json"))
+    return tmp_path
+
+
+@pytest.fixture
+def offline(
+    monkeypatch, search_html, user_html, project_html, browse_html, browse_last_html
+):
     """Serve the fixtures instead of hitting codeshare.frida.re."""
     from app import client as client_module
 
@@ -47,6 +68,10 @@ def offline(monkeypatch, search_html, user_html, project_html):
 
     def fake_query(endpoint, params=None):
         calls.append((endpoint, params))
+        if endpoint == "browse/":
+            page = int((params or {}).get("page", 1))
+            # The real site clamps out-of-range pages to the last one.
+            return browse_html if page == 1 else browse_last_html
         if endpoint not in pages:
             raise client_module.NotFound(endpoint)
         return pages[endpoint]
