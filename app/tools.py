@@ -1,20 +1,31 @@
 import re
+import time
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from httpx import HTTPError
 
+from app import index as index_module
 from app.client import NotFound, _client_
 from app.models import (
+    BrowseResult,
     GrepResult,
+    IndexStatus,
     Project,
     ProjectSummary,
     SearchResult,
     SourceMatch,
     UserProfile,
 )
-from app.scraper import parse_project, parse_search, parse_user, views_to_int
+from app.scraper import (
+    parse_browse,
+    parse_project,
+    parse_search,
+    parse_user,
+    views_to_int,
+)
 
 mcp = FastMCP(
     name="frida-codeshare",
@@ -30,7 +41,11 @@ mcp = FastMCP(
         "chars; raise `limit`/`max_description_chars` or page with `offset` only when "
         "needed (limit=0 returns everything and is expensive).\n"
         "Scripts can be long: prefer grep_project_source to inspect a specific API, "
-        "and get_project's source_offset/source_max_chars to page through the body."
+        "and get_project's source_offset/source_max_chars to page through the body.\n"
+        "browse_projects walks the site's catalogue page by page. For repeated "
+        "exploration, build_index downloads that whole catalogue once and "
+        "search_index then queries it offline (no requests, matches descriptions "
+        "too, unlike search_projects)."
     ),
 )
 
@@ -135,16 +150,7 @@ def search_projects(
 
     total = len(items)
     window, truncated = _page(items, limit, offset)
-    results = [
-        ProjectSummary(
-            id=i.id,
-            name=i.name,
-            description=_clip(i.description, max_description_chars),
-            likes=i.likes,
-            views=i.views,
-        )
-        for i in window
-    ]
+    results = _summaries(window, max_description_chars)
     return SearchResult(
         query=echoed or query,
         total=total,
@@ -152,6 +158,162 @@ def search_projects(
         returned=len(results),
         truncated=truncated,
         results=results,
+    )
+
+
+def _summaries(items: list[ProjectSummary], max_description_chars: int):
+    return [
+        ProjectSummary(
+            id=i.id,
+            name=i.name,
+            description=_clip(i.description, max_description_chars),
+            likes=i.likes,
+            views=i.views,
+        )
+        for i in items
+    ]
+
+
+@mcp.tool
+def browse_projects(
+    page: int = 1,
+    limit: int = 20,
+    offset: int = 0,
+    max_description_chars: int = 200,
+) -> BrowseResult:
+    """List the codeshare.frida.re catalogue one page at a time.
+
+    Args:
+        page: 1-based page number. The site clamps anything past the end to the
+            last page (it answers 200, never 404), so check the returned `page`.
+        limit: Entries returned from that page. 0 returns the whole page.
+        offset: Skip this many entries within the page.
+        max_description_chars: Clip each description. 0 keeps it whole.
+
+    `total_pages` is read from the site's pagination widget. To search the whole
+    catalogue instead of paging through it, use build_index + search_index.
+    """
+    wanted = max(page, 1)
+    what = f"browse page {wanted}"
+    html = _fetch(_client_.browse, what, wanted)
+    served, total_pages, items = _parse(parse_browse, html, what)
+
+    total = len(items)
+    window, truncated = _page(items, limit, offset)
+    return BrowseResult(
+        page=served,
+        total_pages=total_pages,
+        total=total,
+        offset=max(offset, 0),
+        returned=len(window),
+        truncated=truncated,
+        projects=_summaries(window, max_description_chars),
+    )
+
+
+def _index_status(payload: dict | None) -> IndexStatus:
+    path = str(index_module.index_path())
+    if not payload:
+        return IndexStatus(exists=False, projects=0, pages=0, path=path)
+    built_at = payload.get("built_at") or 0
+    return IndexStatus(
+        exists=True,
+        projects=len(payload.get("projects", [])),
+        pages=int(payload.get("pages", 0)),
+        built_at=datetime.fromtimestamp(built_at, timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        if built_at
+        else None,
+        age_seconds=int(time.time() - built_at) if built_at else None,
+        path=path,
+        failed_pages=list(payload.get("failed_pages", [])),
+    )
+
+
+@mcp.tool
+def build_index(refresh: bool = False, max_pages: int = 0) -> IndexStatus:
+    """Download the whole browse catalogue once so searches can run offline.
+
+    Args:
+        refresh: Re-download even if an index already exists.
+        max_pages: Stop after this many browse pages (0 = all of them).
+
+    Walks every page of https://codeshare.frida.re/browse/ (~45 pages, one
+    request each) and stores the result on disk. Call it once; afterwards
+    search_index answers with no network traffic. Returns the index status —
+    call with refresh=False to just check what is already cached. A few browse
+    pages answer 500 permanently; they are skipped and reported in
+    `failed_pages`.
+    """
+    existing = index_module.load_index()
+    if existing and not refresh:
+        return _index_status(existing)
+
+    what = "browse catalogue"
+    try:
+        payload = index_module.build_index(max_pages=max_pages)
+    except NotFound as exc:
+        raise ToolError(f"not found on codeshare.frida.re: {what}") from exc
+    except HTTPError as exc:
+        raise _tool_error(what, exc) from exc
+    except ValueError as exc:
+        raise ToolError(f"unexpected page layout for {what}: {exc}") from exc
+    except OSError as exc:
+        raise ToolError(f"could not write the index to disk: {exc}") from exc
+    return _index_status(payload)
+
+
+@mcp.tool
+def search_index(
+    query: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    sort_by: Literal["relevance", "likes", "views"] = "relevance",
+    min_likes: int = 0,
+    platform: Literal["any", "android", "ios", "windows", "linux", "macos"] = "any",
+    max_description_chars: int = 200,
+) -> SearchResult:
+    """Search the locally indexed catalogue. No network requests.
+
+    Args:
+        query: Terms matched against name, id and description (all must appear).
+            Empty returns the whole catalogue, ranked only by the sort.
+        limit: Results per page. 0 returns everything (expensive).
+        offset: Skip this many results; use with `total` to page.
+        sort_by: "relevance" ranks by where the terms matched, then views.
+        min_likes: Drop results with fewer likes than this.
+        platform: Keyword heuristic over name/description; not an official tag.
+        max_description_chars: Clip each description. 0 keeps it whole.
+
+    Requires build_index first. Unlike search_projects this also matches
+    descriptions and covers every published project, not just the site's own hits.
+    """
+    payload = index_module.load_index()
+    if payload is None:
+        raise ToolError("no local index yet: call build_index first")
+
+    items = [item for _, item in index_module.search(payload, query)]
+
+    if min_likes > 0:
+        items = [i for i in items if (i.likes or 0) >= min_likes]
+    if platform != "any":
+        items = [i for i in items if _matches_platform(i, platform)]
+
+    if sort_by == "likes":
+        items.sort(key=lambda i: i.likes or 0, reverse=True)
+    elif sort_by == "views":
+        items.sort(key=lambda i: views_to_int(i.views), reverse=True)
+
+    total = len(items)
+    window, truncated = _page(items, limit, offset)
+    return SearchResult(
+        query=query,
+        total=total,
+        offset=max(offset, 0),
+        returned=len(window),
+        truncated=truncated,
+        results=_summaries(window, max_description_chars),
     )
 
 
@@ -180,16 +342,7 @@ def get_user_projects(
 
     total = len(items)
     window, truncated = _page(items, limit, offset)
-    projects = [
-        ProjectSummary(
-            id=i.id,
-            name=i.name,
-            description=_clip(i.description, max_description_chars),
-            likes=i.likes,
-            views=i.views,
-        )
-        for i in window
-    ]
+    projects = _summaries(window, max_description_chars)
     return UserProfile(
         username=parsed_name or handle,
         total=total,
@@ -239,10 +392,11 @@ def get_project(
     if not include_source:
         project.snippet = None
         project.source_offset = 0
+        # nothing was returned, so anything non-empty is still unread
         project.source_truncated = bool(source)
         return project
 
-    start = max(source_offset, 0)
+    start = min(max(source_offset, 0), len(source))
     end = len(source) if source_max_chars <= 0 else start + source_max_chars
     project.snippet = source[start:end]
     project.source_offset = start
