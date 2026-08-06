@@ -1,32 +1,68 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
-class Project:
+class ProjectSummary:
+    """Lean listing entry.
+
+    `id` is the canonical "creator/slug" key: pass it straight to get_project.
+    The page URL is https://codeshare.frida.re/@{id}/ and the run command is
+    `frida --codeshare {id} -f YOUR_BINARY`, so neither is repeated here.
+    """
+
+    id: str
     name: str
     description: str
-    url: str | None = None
-    slug: str | None = None
-    creator: str | None = None
     likes: int | None = None
     views: str | None = None
-    command: str | None = None
-    fingerprint: str | None = None
-    snippet: str | None = None
-
-
-@dataclass
-class ProjectList:
-    projects: list[Project]
 
 
 @dataclass
 class SearchResult:
     query: str
-    results: list[Project]
+    total: int
+    offset: int
+    returned: int
+    truncated: bool
+    results: list[ProjectSummary] = field(default_factory=list)
 
 
 @dataclass
 class UserProfile:
     username: str
-    projects: list[Project]
+    total: int
+    offset: int
+    returned: int
+    truncated: bool
+    projects: list[ProjectSummary] = field(default_factory=list)
+
+
+@dataclass
+class Project:
+    id: str
+    name: str
+    description: str
+    creator: str | None = None
+    slug: str | None = None
+    command: str | None = None
+    fingerprint: str | None = None
+    snippet: str | None = None
+    source_total_chars: int = 0
+    source_offset: int = 0
+    source_truncated: bool = False
+
+
+@dataclass
+class SourceMatch:
+    line: int
+    text: str
+
+
+@dataclass
+class GrepResult:
+    id: str
+    pattern: str
+    total_matches: int
+    returned: int
+    truncated: bool
+    matches: list[SourceMatch] = field(default_factory=list)
