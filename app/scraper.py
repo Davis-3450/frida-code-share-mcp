@@ -3,13 +3,15 @@ import re
 
 from bs4 import BeautifulSoup
 
-from app.models import Project, SearchResult, UserProfile
+from app.models import Project, ProjectSummary
 
 _URL_RE = re.compile(r"@([^/]+)/([^/]+)/?\s*$")
 _STATS_RE = re.compile(r"([\d.,]+[KMkm]?)")
 _FINGERPRINT_RE = re.compile(r"Fingerprint:\s*([0-9a-fA-F]{64})")
 _QUERY_RE = re.compile(r'Search Results for\s*"(.*)"\s*$', re.DOTALL)
 _USERNAME_RE = re.compile(r"@(.+?)'s Projects")
+
+_SUFFIXES = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 
 
 def _soup(html: str) -> BeautifulSoup:
@@ -34,6 +36,21 @@ def _vue_str(html: str, key: str) -> str | None:
     return json.loads(match.group(1))
 
 
+def views_to_int(views: str | None) -> int:
+    """'192K' -> 192000, '1.2M' -> 1200000, '834' -> 834, None -> 0"""
+    if not views:
+        return 0
+    text = views.replace(",", "").strip()
+    multiplier = 1
+    if text and text[-1].lower() in _SUFFIXES:
+        multiplier = _SUFFIXES[text[-1].lower()]
+        text = text[:-1]
+    try:
+        return int(float(text) * multiplier)
+    except ValueError:
+        return 0
+
+
 def _parse_stats(text: str) -> tuple[int | None, str | None]:
     """'53 | 192K' -> (53, '192K')"""
     values = _STATS_RE.findall(text)
@@ -49,7 +66,7 @@ def _parse_stats(text: str) -> tuple[int | None, str | None]:
     return likes, views
 
 
-def _parse_article(article, default_creator: str | None = None) -> Project:
+def _parse_article(article, default_creator: str | None = None) -> ProjectSummary:
     link = article.select_one("h2 a")
     href = link.get("href") if link else None
     creator, slug = _split_url(href)
@@ -66,22 +83,20 @@ def _parse_article(article, default_creator: str | None = None) -> Project:
     )
 
     desc = article.select_one("p")
+    name = link.get_text(strip=True) if link else ""
 
-    return Project(
-        name=link.get_text(strip=True) if link else "",
+    return ProjectSummary(
+        id=f"{creator}/{slug}" if creator and slug else name,
+        name=name,
         description=desc.get_text(strip=True) if desc else "",
-        url=href,
-        slug=slug,
-        creator=creator,
         likes=likes,
         views=views,
-        command=f"frida --codeshare {creator}/{slug} -f YOUR_BINARY"
-        if creator and slug
-        else None,
     )
 
 
-def parse_articles(html: str, default_creator: str | None = None) -> list[Project]:
+def parse_articles(
+    html: str, default_creator: str | None = None
+) -> list[ProjectSummary]:
     soup = _soup(html)
     posts = soup.select_one("div.posts")
     if posts is None:
@@ -93,7 +108,8 @@ def parse_articles(html: str, default_creator: str | None = None) -> list[Projec
     ]
 
 
-def parse_search(html: str) -> SearchResult:
+def parse_search(html: str) -> tuple[str, list[ProjectSummary]]:
+    """-> (echoed query, summaries)"""
     soup = _soup(html)
     heading = soup.select_one("section header.major h2")
     query = ""
@@ -101,10 +117,11 @@ def parse_search(html: str) -> SearchResult:
         match = _QUERY_RE.search(heading.get_text(strip=True))
         if match:
             query = match.group(1)
-    return SearchResult(query=query, results=parse_articles(html))
+    return query, parse_articles(html)
 
 
-def parse_user(html: str) -> UserProfile:
+def parse_user(html: str) -> tuple[str, list[ProjectSummary]]:
+    """-> (username, summaries)"""
     soup = _soup(html)
     heading = soup.select_one("section header.major h2")
     username = ""
@@ -112,9 +129,7 @@ def parse_user(html: str) -> UserProfile:
         match = _USERNAME_RE.search(heading.get_text(strip=True))
         if match:
             username = match.group(1)
-    return UserProfile(
-        username=username, projects=parse_articles(html, default_creator=username)
-    )
+    return username, parse_articles(html, default_creator=username)
 
 
 def parse_project(html: str) -> Project:
@@ -160,14 +175,13 @@ def parse_project(html: str) -> Project:
         command = f"frida --codeshare {creator}/{slug} -f YOUR_BINARY"
 
     return Project(
+        id=f"{creator}/{slug}" if creator and slug else (slug or name or ""),
         name=name or slug or "",
         description=description or "",
-        url=f"https://codeshare.frida.re/@{creator}/{slug}/"
-        if creator and slug
-        else None,
-        slug=slug,
         creator=creator,
+        slug=slug,
         command=command,
         fingerprint=fingerprint,
         snippet=snippet,
+        source_total_chars=len(snippet) if snippet else 0,
     )
