@@ -1,8 +1,12 @@
+import tempfile
+from pathlib import Path
+
+from httpx import Client
+
 DEFAULT_TTL = 3600
 DEFAULT_CACHE_DIR = Path(tempfile.gettempdir()) / "frida-codeshare-mcp"
 MAX_MEMORY_ENTRIES = 64  # pages are up to ~100KB each; keep the cache bounded
 PRUNE_INTERVAL = 300  # seconds between disk-cache sweeps
-
 
 
 class CodeShareClient:
@@ -24,6 +28,10 @@ class CodeShareClient:
             endpoint += f"{project_name}/"
         response = self.client.get(endpoint)
         return response
+
+    # https://codeshare.frida.re/browse?page=1
+    def browse(self, page: int = 1):
+        return self.query("browse", params={"page": str(page)})
 
 
 _client_ = CodeShareClient()
